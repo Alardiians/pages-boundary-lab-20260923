@@ -1,0 +1,71 @@
+name: Owned public GraphQL private ACL probe
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare public control and owned private repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          query = '''query($owner:String!, $public:String!, $private:String!) {
+            public: repository(owner:$owner, name:$public) {
+              id
+              object(expression:"main:README.md") { ... on Blob { text } }
+            }
+            private: repository(owner:$owner, name:$private) {
+              id
+              object(expression:"main:private-canary.txt") { ... on Blob { text } }
+            }
+          }'''
+          payload = json.dumps({
+            'query': query,
+            'variables': {
+              'owner': 'Alardiians',
+              'public': 'pages-boundary-lab-20260923',
+              'private': 'copilot-space-acl-canary-20260923',
+            },
+          }).encode()
+          request = urllib.request.Request(
+            'https://api.github.com/graphql',
+            data=payload,
+            headers={
+              'Accept': 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+              'X-GitHub-Api-Version': '2026-03-10',
+            },
+          )
+          try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+              status = response.status
+              result = json.load(response)
+          except urllib.error.HTTPError as exc:
+            status = exc.code
+            result = json.load(exc)
+          data = result.get('data') or {}
+          public = data.get('public') or {}
+          private = data.get('private') or {}
+          public_text = (public.get('object') or {}).get('text')
+          private_text = (private.get('object') or {}).get('text')
+          expected_private_sha256 = '5B01C7C925785C5B73D8FC12CE5EAE159BC3EC6B9CD991A83527A30C10B26446'
+          print('GRAPHQL_HTTP_STATUS=' + str(status))
+          print('PUBLIC_REPOSITORY_PRESENT=' + str(bool(public)))
+          print('PUBLIC_README_PRESENT=' + str(public_text is not None))
+          print('PRIVATE_REPOSITORY_PRESENT=' + str(bool(private)))
+          print('PRIVATE_CANARY_PRESENT=' + str(private_text is not None))
+          print('PRIVATE_CANARY_MATCH=' + str(private_text is not None and hashlib.sha256(private_text.encode()).hexdigest().upper() == expected_private_sha256))
+          print('GRAPHQL_ERRORS_PRESENT=' + str(bool(result.get('errors'))))
+          PY
