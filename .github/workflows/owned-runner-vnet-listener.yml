@@ -1,0 +1,28 @@
+name: Owned runner VNet listener
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  listener:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Serve one synthetic canary from this owned runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/owned-vnet-canary
+          printf 'OWNED_VNET_CANARY_A_RUN_%s\n' "$GITHUB_RUN_ID" > /tmp/owned-vnet-canary/canary.txt
+          python3 -m http.server 41837 --bind 0.0.0.0 --directory /tmp/owned-vnet-canary >/tmp/owned-vnet-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          sleep 2
+          local_status=$(curl --noproxy '*' --max-time 3 --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:41837/canary.txt)
+          printf 'LOCAL_CONTROL_STATUS=%s\n' "$local_status"
+          printf 'LISTENER_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+          printf 'LISTENER_IPS=%s\n' "$(hostname -I)"
+          printf 'LISTENER_PORT=41837\n'
+          sleep 540
