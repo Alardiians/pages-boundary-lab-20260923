@@ -1,0 +1,29 @@
+name: Private issue comment ACL probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check GraphQL node ACL
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          query = 'query { viewer { login } publicControl: repository(owner:"github", name:"docs") { id name } target: node(id:"IC_kwDOUnbB0s8AAAABWZAtbA") { __typename ... on IssueComment { body repository { nameWithOwner } } } }'
+          data = json.dumps({'query': query}).encode()
+          request = urllib.request.Request('https://api.github.com/graphql', data=data, headers={'Authorization': 'Bearer ' + os.environ['GITHUB_TOKEN'], 'Content-Type': 'application/json', 'User-Agent': 'owned-acl-probe'})
+          with urllib.request.urlopen(request, timeout=20) as response:
+              payload = json.load(response)
+              print('http_status', response.status)
+          root = payload.get('data') or {}
+          target = root.get('target')
+          print('viewer_valid', bool((root.get('viewer') or {}).get('login')))
+          print('public_control_valid', (root.get('publicControl') or {}).get('name') == 'docs')
+          print('target_type', (target or {}).get('__typename'))
+          print('private_canary_seen', 'GH_PRIVATE_COMMENT_ACL_20260923_9a8f12d07b44' in ((target or {}).get('body') or ''))
+          print('errors', [e.get('type') or e.get('message') for e in payload.get('errors') or []])
+          PY
