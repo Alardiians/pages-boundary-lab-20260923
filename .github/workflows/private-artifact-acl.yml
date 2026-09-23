@@ -1,0 +1,28 @@
+name: Owned cross-repository artifact token probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  private_artifact_acl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Attempt owned private artifact download
+        id: probe
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          repository: Alardiians/github-bounty-lab-20260923
+          run-id: 35860317578
+          pattern: TRUSTED
+          path: private-artifact-probe
+          github-token: ${{ github.token }}
+      - name: Record only bounded result
+        run: |
+          echo "DOWNLOAD_STEP_OUTCOME=${{ steps.probe.outcome }}"
+          if test -f private-artifact-probe/TRUSTED/z-marker.ps1; then
+            sha256sum private-artifact-probe/TRUSTED/z-marker.ps1
+          else
+            echo 'PRIVATE_ARTIFACT_FILE_ABSENT'
+          fi
