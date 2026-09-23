@@ -1,0 +1,53 @@
+name: Owned public repo token private GHCR ACL control
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe exact owned private OCI blobs with unrelated repository token
+        env:
+          LAB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          token_url='https://ghcr.io/token?service=ghcr.io&scope=repository%3Aalardiians%2Fbounty-private-container-canary-20260923%3Apull'
+          token_status=$(curl -q -sS --max-time 15 -u "$GHCR_ACTOR:$LAB_TOKEN" -o token-response.json -w '%{http_code}' "$token_url")
+          echo "token_exchange_status=$token_status token_response_bytes=$(wc -c < token-response.json)"
+          if [ "$token_status" = 200 ]; then
+            scoped_token=$(python3 -c 'import json; print(json.load(open("token-response.json"))["token"])')
+            base='https://ghcr.io/v2/alardiians/bounty-private-container-canary-20260923'
+            manifest='/manifests/sha256:813a0772d72039f6247380a71a3ca2d74cca9a7f2aa9053723b86972cb95aeb3'
+            config='/blobs/sha256:e0759e2963b7c2f4f1bfef6cda4d40b8981b5ad4bb369bb860ad7447dd89b677'
+            layer='/blobs/sha256:0f2243428db9a52cb3e2f516fd3f4390edff25b6ee4dca57c773bb5fcb139286'
+            for kind in manifest config layer; do
+              path="${!kind}"
+              status=$(curl -q -sS --max-time 15 -H "Authorization: Bearer $scoped_token" -o "$kind.body" -w '%{http_code}' "$base$path")
+              echo "$kind status=$status bytes=$(wc -c < "$kind.body") sha256=$(sha256sum "$kind.body" | cut -d' ' -f1)"
+              if [ "$status" = 200 ] || [ "$status" = 307 ] || [ "$status" = 302 ]; then
+                echo 'PRIVATE_OCI_CONTENT_OR_REDIRECT_RETURNED'
+                exit 1
+              fi
+            done
+          fi
+          set +e
+          printf '%s' "$LAB_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin > login.log 2>&1
+          login_status=$?
+          echo "docker_login_exit=$login_status"
+          pull_status=99
+          if [ "$login_status" -eq 0 ]; then
+            docker pull ghcr.io/alardiians/bounty-private-container-canary-20260923:latest > pull.log 2>&1
+            pull_status=$?
+          fi
+          set -e
+          echo "docker_pull_exit=$pull_status"
+          if [ "$pull_status" -eq 0 ]; then
+            echo 'PRIVATE_OCI_PULL_SUCCEEDED'
+            exit 1
+          fi
