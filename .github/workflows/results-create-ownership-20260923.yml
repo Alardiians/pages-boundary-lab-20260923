@@ -87,8 +87,8 @@ jobs:
               core.info(`${item.label} NAME=${name}`);
               try {
                 const created = await call('CreateArtifact', {
-                  workflowRunBackendId: item.run, workflowJobRunBackendId: item.job,
-                  name, version: 7, mimeType: {value: 'text/plain'}
+                  workflow_run_backend_id: item.run, workflow_job_run_backend_id: item.job,
+                  name, version: 7, mime_type: 'text/plain'
                 });
                 const signed = created.data.signedUploadUrl || created.data.signed_upload_url;
                 core.info(`${item.label} CREATE_STATUS=${created.status}`);
@@ -105,7 +105,7 @@ jobs:
                 core.info(`${item.label} UPLOAD_STATUS=${uploaded.status}`);
                 if (uploaded.status !== 201) continue;
                 const finalized = await call('FinalizeArtifact', {
-                  workflowRunBackendId: item.run, workflowJobRunBackendId: item.job,
+                  workflow_run_backend_id: item.run, workflow_job_run_backend_id: item.job,
                   name, size: String(payload.length)
                 });
                 core.info(`${item.label} FINALIZE_STATUS=${finalized.status}`);
