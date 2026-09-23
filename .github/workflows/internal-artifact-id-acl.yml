@@ -1,0 +1,37 @@
+name: Owned internal artifact ID ACL probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  acl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create benign control
+        run: echo 'owned-control' > control.txt
+      - uses: actions/upload-artifact@v4
+        id: own_upload
+        with:
+          name: own-control
+          path: control.txt
+      - name: Install artifact client
+        run: npm install --prefix .artifact-client --no-save --no-package-lock @actions/artifact@6.2.2
+      - name: Test scoped artifact IDs
+        env:
+          OWN_ID: ${{ steps.own_upload.outputs.artifact-id }}
+          PRIVATE_ID: '10750183115'
+        run: |
+          node --input-type=module <<'NODE'
+          import artifact from './.artifact-client/node_modules/@actions/artifact/lib/artifact.js';
+          for (const [label, id] of [['own', process.env.OWN_ID], ['private', process.env.PRIVATE_ID]]) {
+            try {
+              const result = await artifact.downloadArtifact(Number(id), {path: `probe-${label}`});
+              console.log(`${label}: downloaded to ${result.downloadPath}`);
+            } catch (error) {
+              console.log(`${label}: ${error.name}: ${error.message}`);
+            }
+          }
+          NODE
+          if test -f probe-own/control.txt; then echo 'OWN_CONTROL_FOUND'; else echo 'OWN_CONTROL_ABSENT'; fi
+          if test -f probe-private/z-marker.ps1; then sha256sum probe-private/z-marker.ps1; else echo 'PRIVATE_MARKER_ABSENT'; fi
