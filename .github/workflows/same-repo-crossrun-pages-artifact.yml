@@ -1,0 +1,96 @@
+name: Owned same-repo Pages artifact run-scope probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Produce only, cross-run deploy, or same-run control
+        required: true
+        type: choice
+        options:
+          - produce
+          - crossrun
+          - control
+      artifact_id:
+        description: Owned Pages artifact ID for cross-run mode
+        required: false
+        type: string
+        default: '0'
+
+permissions: {}
+
+jobs:
+  producer:
+    if: inputs.mode == 'produce' || inputs.mode == 'control'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact_id }}
+    steps:
+      - name: Write unique synthetic page
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir site
+          printf '<!doctype html><title>Owned Pages run-scope canary</title><p>SYNTHETIC_PAGES_PRODUCER_RUN_%s</p>\n' "$GITHUB_RUN_ID" > site/index.html
+          sha256sum site/index.html
+      - name: Upload valid Pages artifact
+        id: upload
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+      - name: Record artifact ID
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact_id }}
+        shell: bash
+        run: |
+          printf 'PRODUCER_RUN_ID=%s\nPRODUCER_ARTIFACT_ID=%s\n' "$GITHUB_RUN_ID" "$ARTIFACT_ID"
+
+  crossrun_deploy:
+    if: inputs.mode == 'crossrun'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - name: Ask Pages to deploy prior-run artifact
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_ARTIFACT_ID: ${{ inputs.artifact_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          oidc="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}" | jq -r .value)"
+          test -n "$oidc" && test "$oidc" != 'null'
+          jq -n --arg oidc "$oidc" --arg version "$GITHUB_SHA" --argjson artifact_id "$TARGET_ARTIFACT_ID" \
+            '{artifact_id:$artifact_id,pages_build_version:$version,oidc_token:$oidc}' > request.json
+          status="$(curl --silent --show-error --output response.json --write-out '%{http_code}' \
+            --request POST --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            --header 'Content-Type: application/json' --data-binary @request.json \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages/deployments")"
+          rm -f request.json
+          printf 'CROSSRUN_REQUESTED_ARTIFACT_ID=%s\nCROSSRUN_HTTP_STATUS=%s\n' "$TARGET_ARTIFACT_ID" "$status"
+          jq -c '{message,documentation_url,status,id,page_url}' response.json
+
+  same_run_control:
+    if: inputs.mode == 'control'
+    needs: producer
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy current-run artifact with official action
+        id: deploy
+        uses: actions/deploy-pages@v5
