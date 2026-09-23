@@ -46,3 +46,39 @@ jobs:
               const hash = require("node:crypto").createHash("sha256").update(fs.readFileSync(privatePath)).digest("hex");
               core.info("PRIVATE_MARKER_SHA256=" + hash);
             }
+      - name: Probe Results service request authorization
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const path = require('node:path');
+            const {pathToFileURL} = require('node:url');
+            const base = path.join(process.env.GITHUB_WORKSPACE, ".artifact-client", "node_modules", "@actions", "artifact", "lib");
+            const clientModule = await import(pathToFileURL(path.join(base, "internal", "shared", "artifact-twirp-client.js")).href);
+            const utilModule = await import(pathToFileURL(path.join(base, "internal", "shared", "util.js")).href);
+            const client = clientModule.internalArtifactTwirpClient({maxAttempts: 1});
+            const own = utilModule.getBackendIdsFromToken();
+            const tests = [
+              {label: "own", run: own.workflowRunBackendId, job: own.workflowJobRunBackendId, name: "own-control"},
+              {label: "private", run: "e698c9f5-9337-4f38-aa21-c0cabd75d7c6", job: "852a80b5-ae89-56ad-a153-59ec98f077b6", name: "trusted"}
+            ];
+            for (const test of tests) {
+              try {
+                const listed = await client.ListArtifacts({workflowRunBackendId: test.run, workflowJobRunBackendId: test.job});
+                core.info(test.label + " LIST_COUNT=" + listed.artifacts.length);
+                core.info(test.label + " LIST_NAMES=" + listed.artifacts.map(item => item.name).join(","));
+              } catch (error) {
+                core.info(test.label + " LIST_ERROR=" + error.name + ": " + error.message);
+              }
+              try {
+                const signed = await client.GetSignedArtifactURL({workflowRunBackendId: test.run, workflowJobRunBackendId: test.job, name: test.name});
+                core.info(test.label + " SIGNED_URL_PRESENT=" + Boolean(signed.signedUrl));
+                if (test.label === "private" && signed.signedUrl) {
+                  const response = await fetch(signed.signedUrl);
+                  const bytes = Buffer.from(await response.arrayBuffer());
+                  const hash = require("node:crypto").createHash("sha256").update(bytes).digest("hex");
+                  core.info("private BLOB_STATUS=" + response.status + " BLOB_BYTES=" + bytes.length + " BLOB_SHA256=" + hash);
+                }
+              } catch (error) {
+                core.info(test.label + " SIGN_ERROR=" + error.name + ": " + error.message);
+              }
+            }
