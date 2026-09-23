@@ -1,0 +1,118 @@
+name: Owned Results CreateArtifact ownership boundary
+
+on:
+  workflow_dispatch:
+    inputs:
+      role:
+        description: Anchor or probe
+        type: choice
+        required: true
+        options:
+          - anchor
+          - probe
+      target_run_backend_id:
+        description: Owned active anchor run backend UUID (probe only)
+        type: string
+        required: false
+      target_job_backend_id:
+        description: Owned active anchor job backend UUID (probe only)
+        type: string
+        required: false
+
+permissions: {}
+
+jobs:
+  anchor:
+    if: ${{ inputs.role == 'anchor' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Log owned anchor backend IDs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url'));
+            const claim = claims.scp.split(' ').find(s => s.startsWith('Actions.Results:'));
+            if (!claim) throw new Error('Missing Actions.Results scope');
+            const [, runId, jobId] = claim.split(':');
+            core.info(`ANCHOR_BACKEND_RUN=${runId}`);
+            core.info(`ANCHOR_BACKEND_JOB=${jobId}`);
+      - name: Upload inert anchor control
+        shell: bash
+        run: printf 'SYNTHETIC_RESULTS_ANCHOR_%s\n' "$GITHUB_RUN_ID" > anchor.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: owned-create-anchor-${{ github.run_id }}
+          path: anchor.txt
+      - name: Keep target run active during separate probe
+        shell: bash
+        run: sleep 180
+
+  probe:
+    if: ${{ inputs.role == 'probe' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Test CreateArtifact ownership with inert files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const resultsUrl = process.env.ACTIONS_RESULTS_URL;
+            if (!token || !resultsUrl) throw new Error('Missing owned runtime context');
+            const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url'));
+            const claim = claims.scp.split(' ').find(s => s.startsWith('Actions.Results:'));
+            if (!claim) throw new Error('Missing Actions.Results scope');
+            const [, ownRun, ownJob] = claim.split(':');
+            const anchorRun = '${{ inputs.target_run_backend_id }}';
+            const anchorJob = '${{ inputs.target_job_backend_id }}';
+            const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuid.test(anchorRun) || !uuid.test(anchorJob)) throw new Error('Owned anchor UUID inputs required');
+            const cases = [
+              {label: 'own', run: ownRun, job: ownJob},
+              {label: 'same_repo_active', run: anchorRun, job: anchorJob},
+              {label: 'private_repo_finished', run: 'e698c9f5-9337-4f38-aa21-c0cabd75d7c6', job: '852a80b5-ae89-56ad-a153-59ec98f077b6'}
+            ];
+            const base = new URL(resultsUrl);
+            const endpoint = method => new URL(`/twirp/github.actions.results.api.v1.ArtifactService/${method}`, base);
+            const headers = {Authorization: `Bearer ${token}`, 'Content-Type': 'application/json'};
+            const call = async (method, body) => {
+              const response = await fetch(endpoint(method), {method: 'POST', headers, body: JSON.stringify(body)});
+              return {status: response.status, data: await response.json()};
+            };
+            core.info(`PROBE_RUN=${context.runId}`);
+            core.info(`PROBE_BACKEND_RUN=${ownRun}`);
+            core.info(`PROBE_BACKEND_JOB=${ownJob}`);
+            for (const item of cases) {
+              const name = `owned-create-${item.label}-${context.runId}.txt`;
+              core.info(`${item.label} NAME=${name}`);
+              try {
+                const created = await call('CreateArtifact', {
+                  workflowRunBackendId: item.run, workflowJobRunBackendId: item.job,
+                  name, version: 7, mimeType: {value: 'text/plain'}
+                });
+                const signed = created.data.signedUploadUrl || created.data.signed_upload_url;
+                core.info(`${item.label} CREATE_STATUS=${created.status}`);
+                core.info(`${item.label} CREATE_OK=${created.data.ok === true}`);
+                core.info(`${item.label} CREATE_CODE=${String(created.data.code || '')}`);
+                core.info(`${item.label} UPLOAD_URL_PRESENT=${Boolean(signed)}`);
+                if (!signed) continue;
+                const payload = Buffer.from(`SYNTHETIC_RESULTS_${item.label}_${context.runId}\n`);
+                const uploaded = await fetch(signed, {
+                  method: 'PUT',
+                  headers: {'x-ms-blob-type': 'BlockBlob', 'Content-Type': 'application/octet-stream'},
+                  body: payload
+                });
+                core.info(`${item.label} UPLOAD_STATUS=${uploaded.status}`);
+                if (uploaded.status !== 201) continue;
+                const finalized = await call('FinalizeArtifact', {
+                  workflowRunBackendId: item.run, workflowJobRunBackendId: item.job,
+                  name, size: String(payload.length)
+                });
+                core.info(`${item.label} FINALIZE_STATUS=${finalized.status}`);
+                core.info(`${item.label} FINALIZE_OK=${finalized.data.ok === true}`);
+                core.info(`${item.label} FINALIZE_CODE=${String(finalized.data.code || '')}`);
+                core.info(`${item.label} ARTIFACT_ID=${String(finalized.data.artifactId || finalized.data.artifact_id || '')}`);
+              } catch (error) {
+                core.info(`${item.label} ERROR_NAME=${error.name}`);
+              }
+            }
