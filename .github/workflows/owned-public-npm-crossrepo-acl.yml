@@ -1,0 +1,30 @@
+name: Owned public repo token private npm ACL control
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe owned private package with unrelated repository token
+        env:
+          LAB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          metadata='https://npm.pkg.github.com/@alardiians%2fbounty-private-package-canary-20260923'
+          tarball='https://npm.pkg.github.com/download/@alardiians/bounty-private-package-canary-20260923/1.0.0/3456e5ed77710b1d09b04d03661b35ba0096aaad'
+          for kind in metadata tarball; do
+            url="${!kind}"
+            status=$(curl -q -sS --max-time 15 -H "Authorization: Bearer $LAB_TOKEN" -o "$kind.body" -w '%{http_code}' "$url")
+            digest=$(sha256sum "$kind.body" | cut -d' ' -f1)
+            echo "$kind status=$status sha256=$digest bytes=$(wc -c < "$kind.body")"
+            if grep -a -q 'GITHUB_PACKAGES_ACL_CANARY_74eb7022d85a4e8e' "$kind.body"; then
+              echo 'SYNTHETIC_CANARY_RETURNED'
+              exit 1
+            fi
+          done
