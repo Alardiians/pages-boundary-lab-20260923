@@ -18,20 +18,31 @@ jobs:
       - name: Install artifact client
         run: npm install --prefix .artifact-client --no-save --no-package-lock @actions/artifact@6.2.1
       - name: Test scoped artifact IDs
+        uses: actions/github-script@v8
         env:
           OWN_ID: ${{ steps.own_upload.outputs.artifact-id }}
           PRIVATE_ID: '10750183115'
-        run: |
-          node --input-type=module <<'NODE'
-          import artifact from './.artifact-client/node_modules/@actions/artifact/lib/artifact.js';
-          for (const [label, id] of [['own', process.env.OWN_ID], ['private', process.env.PRIVATE_ID]]) {
-            try {
-              const result = await artifact.downloadArtifact(Number(id), {path: `probe-${label}`});
-              console.log(`${label}: downloaded to ${result.downloadPath}`);
-            } catch (error) {
-              console.log(`${label}: ${error.name}: ${error.message}`);
+        with:
+          script: |
+            const path = require('node:path');
+            const fs = require('node:fs');
+            const {pathToFileURL} = require('node:url');
+            const artifactPath = path.join(process.env.GITHUB_WORKSPACE, ".artifact-client", "node_modules", "@actions", "artifact", "lib", "artifact.js");
+            const artifact = (await import(pathToFileURL(artifactPath).href)).default;
+            core.info("RUNTIME_TOKEN_PRESENT=" + Boolean(process.env.ACTIONS_RUNTIME_TOKEN));
+            for (const [label, id] of [["own", process.env.OWN_ID], ["private", process.env.PRIVATE_ID]]) {
+              try {
+                const destination = path.join(process.env.GITHUB_WORKSPACE, "probe-" + label);
+                const result = await artifact.downloadArtifact(Number(id), {path: destination});
+                core.info(label + ": downloaded to " + result.downloadPath);
+              } catch (error) {
+                core.info(label + ": " + error.name + ": " + error.message);
+              }
             }
-          }
-          NODE
-          if test -f probe-own/control.txt; then echo 'OWN_CONTROL_FOUND'; else echo 'OWN_CONTROL_ABSENT'; fi
-          if test -f probe-private/z-marker.ps1; then sha256sum probe-private/z-marker.ps1; else echo 'PRIVATE_MARKER_ABSENT'; fi
+            core.info("OWN_CONTROL_FOUND=" + fs.existsSync(path.join(process.env.GITHUB_WORKSPACE, "probe-own", "control.txt")));
+            const privatePath = path.join(process.env.GITHUB_WORKSPACE, "probe-private", "z-marker.ps1");
+            core.info("PRIVATE_MARKER_FOUND=" + fs.existsSync(privatePath));
+            if (fs.existsSync(privatePath)) {
+              const hash = require("node:crypto").createHash("sha256").update(fs.readFileSync(privatePath)).digest("hex");
+              core.info("PRIVATE_MARKER_SHA256=" + hash);
+            }
