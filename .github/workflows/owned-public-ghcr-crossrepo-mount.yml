@@ -47,3 +47,37 @@ jobs:
               echo 'PRIVATE_SOURCE_LAYER_COPIED_TO_UNRELATED_REPOSITORY=true'
             fi
           fi
+      - name: Positive control for authorized cross-repository blob mount
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          source='alardiians/bounty-publicrepo-mount-canary-20260923'
+          dest='alardiians/bounty-publicrepo-mount-positive-20260923'
+          mkdir positive-context
+          printf '%s\n' 'AUTHORIZED_DESTINATION_ONLY_6ef9570403674933' > positive-context/dest.txt
+          cat > positive-context/Dockerfile <<'DOCKERFILE'
+          FROM scratch
+          LABEL org.opencontainers.image.source="https://github.com/Alardiians/pages-boundary-lab-20260923"
+          COPY dest.txt /dest.txt
+          DOCKERFILE
+          docker build -t "ghcr.io/$dest:latest" positive-context >/dev/null
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_ACTOR" --password-stdin >/dev/null
+          docker push "ghcr.io/$dest:latest" >/dev/null
+          docker manifest inspect "ghcr.io/$source:latest" > source-manifest.json
+          source_digest=$(python3 -c 'import json; print(json.load(open("source-manifest.json"))["layers"][0]["digest"])')
+          echo "authorized_source_layer_digest=$source_digest"
+          registry_status=$(curl -q -sS --max-time 20 -u "$GHCR_ACTOR:$GHCR_TOKEN" -G 'https://ghcr.io/token' --data-urlencode 'service=ghcr.io' --data-urlencode "scope=repository:$dest:pull,push" --data-urlencode "scope=repository:$source:pull" -o positive-token.json -w '%{http_code}')
+          echo "positive_registry_token_exchange_status=$registry_status"
+          test "$registry_status" = 200
+          registry_token=$(python3 -c 'import json; print(json.load(open("positive-token.json"))["token"])')
+          source_status=$(curl -q -sS --max-time 20 -H "Authorization: Bearer $registry_token" -o positive-source.body -w '%{http_code}' "https://ghcr.io/v2/$source/blobs/$source_digest")
+          echo "positive_source_blob_status=$source_status"
+          mount_status=$(curl -q -sS --max-time 20 -X POST -H "Authorization: Bearer $registry_token" -H 'Content-Length: 0' -o positive-mount.body -w '%{http_code}' "https://ghcr.io/v2/$dest/blobs/uploads/?mount=$source_digest&from=$source")
+          echo "authorized_crossrepo_mount_status=$mount_status"
+          if [ "$mount_status" = 201 ]; then
+            dest_status=$(curl -q -sS -L --max-time 20 -H "Authorization: Bearer $registry_token" -o positive-dest.blob -w '%{http_code}' "https://ghcr.io/v2/$dest/blobs/$source_digest")
+            echo "authorized_mount_dest_blob_status=$dest_status"
+            echo "authorized_mount_dest_blob_sha256=$(sha256sum positive-dest.blob | cut -d' ' -f1) bytes=$(wc -c < positive-dest.blob)"
+          fi
