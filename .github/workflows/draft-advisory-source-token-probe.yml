@@ -1,0 +1,62 @@
+name: Draft advisory cross-repo token ACL probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe owned public repository draft with source token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          base = 'https://api.github.com'
+          target = 'Alardiians/pages-boundary-lab-b-20260923'
+          ghsa = 'GHSA-gggj-5m3j-9w59'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+          }
+          def request(url, data=None):
+              h = dict(headers)
+              if data is not None:
+                  h['Content-Type'] = 'application/json'
+              req = urllib.request.Request(url, data=data, headers=h)
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as resp:
+                      return resp.status, resp.read()
+              except urllib.error.HTTPError as error:
+                  return error.code, error.read()
+          detail_status, detail_raw = request(f'{base}/repos/{target}/security-advisories/{ghsa}')
+          list_status, list_raw = request(f'{base}/repos/{target}/security-advisories?state=draft')
+          global_status, global_raw = request(f'{base}/advisories/{ghsa}')
+          try:
+              listed = any(item.get('ghsa_id') == ghsa for item in json.loads(list_raw))
+          except (ValueError, TypeError):
+              listed = False
+          query = json.dumps({'query':'query($id:String!){securityAdvisory(ghsaId:$id){ghsaId}}','variables':{'id':ghsa}}).encode()
+          graph_status, graph_raw = request(f'{base}/graphql', query)
+          try:
+              graph = json.loads(graph_raw)
+          except ValueError:
+              graph = {}
+          found = bool(((graph.get('data') or {}).get('securityAdvisory') or {}).get('ghsaId') == ghsa)
+          print(f'repository_detail_status={detail_status}')
+          print(f'repository_list_status={list_status}')
+          print(f'draft_present_in_list={listed}')
+          print(f'global_detail_status={global_status}')
+          print(f'graphql_status={graph_status}')
+          print(f'graphql_found={found}')
+          print(f'graphql_error_count={len(graph.get("errors") or [])}')
+          PY
