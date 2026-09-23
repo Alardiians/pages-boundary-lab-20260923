@@ -1,0 +1,57 @@
+name: Owned cache branch case scope probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Save a marker or restore it on this branch
+        required: true
+        type: choice
+        options:
+          - save
+          - restore
+      cohort:
+        description: Separate case and ordinary-branch controls
+        required: true
+        type: choice
+        options:
+          - case
+          - control
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Write synthetic marker
+        if: inputs.mode == 'save'
+        shell: bash
+        run: |
+          printf 'SYNTHETIC_CACHE_SCOPE_%s_FROM_%s_RUN_%s\n' '${{ inputs.cohort }}' '${{ github.ref_name }}' '${{ github.run_id }}' > cache-marker.txt
+          sha256sum cache-marker.txt
+      - name: Save cache
+        if: inputs.mode == 'save'
+        uses: actions/cache/save@v4
+        with:
+          path: cache-marker.txt
+          key: owned-scope-case-20260923-c9ea817d833b-${{ inputs.cohort }}
+      - name: Restore cache
+        if: inputs.mode == 'restore'
+        id: restored
+        uses: actions/cache/restore@v4
+        with:
+          path: cache-marker.txt
+          key: owned-scope-case-20260923-c9ea817d833b-${{ inputs.cohort }}
+      - name: Record result
+        if: inputs.mode == 'restore'
+        shell: bash
+        run: |
+          printf 'cache-hit=%s\n' '${{ steps.restored.outputs.cache-hit }}'
+          if test -f cache-marker.txt; then
+            printf 'marker='; cat cache-marker.txt
+            sha256sum cache-marker.txt
+          else
+            printf 'marker=ABSENT\n'
+          fi
