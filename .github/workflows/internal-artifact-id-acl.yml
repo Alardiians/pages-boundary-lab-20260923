@@ -16,7 +16,7 @@ jobs:
           name: own-control
           path: control.txt
       - name: Install artifact client
-        run: npm install --prefix .artifact-client --no-save --no-package-lock @actions/artifact@6.2.2
+        run: npm install --prefix .artifact-client --no-save --no-package-lock @actions/artifact@6.2.1
       - name: Test scoped artifact IDs
         env:
           OWN_ID: ${{ steps.own_upload.outputs.artifact-id }}
